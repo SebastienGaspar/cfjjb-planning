@@ -1,0 +1,28 @@
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Outputs from the scraper / builder (regenerated on each run)
+output/
+*.xlsx
+
+# IDE / OS cruft
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Playwright bundled browsers (installed into ~/.cache/ms-playwright by default,
+# but ignore them in case a user points PLAYWRIGHT_BROWSERS_PATH at the repo)
+ms-playwright/
