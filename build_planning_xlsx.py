@@ -270,8 +270,13 @@ def main() -> int:
     ap.add_argument("--input-dir", default="output", help="Folder with the three JSON files.")
     ap.add_argument("--format", choices=("xlsx", "pdf"), default="xlsx",
                     help="Output format (default: xlsx).")
+    ap.add_argument("--name", default=None,
+                    help="Output filename stem placed under --input-dir "
+                         "(e.g. --name mon_planning -> <input-dir>/mon_planning.<format>). "
+                         "Any extension you include is stripped.")
     ap.add_argument("--out", default=None,
-                    help="Output path (default: <input-dir>/planning_<academy>.<format>).")
+                    help="Full output path, overrides --name and --input-dir "
+                         "(default: <input-dir>/planning_<academy>.<format>).")
     ap.add_argument("--debug", action="store_true",
                     help="Print per-athlete lookup trace (bracket found, page/mat, which priority matched).")
     ap.add_argument("--only", default=None,
@@ -398,8 +403,14 @@ def main() -> int:
 
     rows.sort(key=lambda r: (str(r["date"]), str(r["time"]), str(r["mat"]), str(r["name"])))
 
-    slug = "".join(c if c.isalnum() else "_" for c in args.academy).strip("_")
-    out_path = Path(args.out) if args.out else (in_dir / f"planning_{slug}.{args.format}")
+    if args.out:
+        out_path = Path(args.out)
+    elif args.name:
+        stem = Path(args.name).stem or args.name
+        out_path = in_dir / f"{stem}.{args.format}"
+    else:
+        slug = "".join(c if c.isalnum() else "_" for c in args.academy).strip("_")
+        out_path = in_dir / f"planning_{slug}.{args.format}"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     if args.format == "pdf":
         write_pdf(rows, out_path, args.academy)
