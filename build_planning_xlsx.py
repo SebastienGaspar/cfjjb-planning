@@ -19,11 +19,12 @@ Output columns:
   (Tableaux is "N/M" — the athlete's bracket page out of the total pages.)
 
 One row per athlete (no more "same category × N slots" blow-up).
-Output lands in output/planning_<academy>.xlsx.
+Output lands in output/planning_<academy>.<xlsx|pdf>.
 
 Usage:
-    pip install openpyxl
+    pip install openpyxl reportlab
     python3 build_planning_xlsx.py --academy "Example Academy"
+    python3 build_planning_xlsx.py --academy "Example Academy" --format pdf
 """
 
 from __future__ import annotations
@@ -120,6 +121,29 @@ BELT_FILLS = {
 }
 
 
+def format_tableaux(r: dict) -> str:
+    page = r.get("page")
+    total = r.get("page_total")
+    if page is not None and total:
+        return f"{page}/{total}"
+    if page is not None:
+        return f"{page}"
+    if r.get("has_slot"):
+        # The planning slot had no "N/M" pill — the bracket is a single
+        # page (e.g. P.Seule or a small category). Render as 1/1.
+        return "1/1"
+    return ""
+
+
+def row_cells(r: dict) -> list[str]:
+    return [
+        r["name"], r["team"], r["category"],
+        r["date"], r["time"], r["mat"],
+        format_tableaux(r),
+        r["note"] or "",
+    ]
+
+
 def write_xlsx(rows: list[dict], out_path: Path, academy: str) -> None:
     wb = Workbook()
     ws = wb.active
@@ -140,24 +164,7 @@ def write_xlsx(rows: list[dict], out_path: Path, academy: str) -> None:
         c.alignment = Alignment(horizontal="center", vertical="center")
 
     for r in rows:
-        page = r.get("page")
-        total = r.get("page_total")
-        if page is not None and total:
-            tableaux = f"{page}/{total}"
-        elif page is not None:
-            tableaux = f"{page}"
-        elif r.get("has_slot"):
-            # The planning slot had no "N/M" pill — the bracket is a single
-            # page (e.g. P.Seule or a small category). Render as 1/1.
-            tableaux = "1/1"
-        else:
-            tableaux = ""
-        ws.append([
-            r["name"], r["team"], r["category"],
-            r["date"], r["time"], r["mat"],
-            tableaux,
-            r["note"] or "",
-        ])
+        ws.append(row_cells(r))
         belt = norm(r.get("belt"))
         fill_hex = BELT_FILLS.get(belt)
         if fill_hex:
@@ -177,13 +184,94 @@ def write_xlsx(rows: list[dict], out_path: Path, academy: str) -> None:
     wb.save(out_path)
 
 
+def write_pdf(rows: list[dict], out_path: Path, academy: str) -> None:
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import mm
+    from reportlab.platypus import (
+        SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer,
+    )
+
+    def hex_to_color(hex_str: str) -> colors.Color:
+        return colors.HexColor("#" + hex_str)
+
+    page_size = landscape(A4)
+    doc = SimpleDocTemplate(
+        str(out_path),
+        pagesize=page_size,
+        leftMargin=10 * mm, rightMargin=10 * mm,
+        topMargin=10 * mm, bottomMargin=10 * mm,
+        title=f"Planning — {academy}",
+    )
+
+    styles = getSampleStyleSheet()
+    title_style = styles["Title"]
+    title_style.fontSize = 14
+    cell_style = styles["BodyText"]
+    cell_style.fontSize = 8
+    cell_style.leading = 10
+
+    def P(text: str) -> Paragraph:
+        # Wrap long cells (category, note) instead of overflowing.
+        safe = (text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        return Paragraph(safe, cell_style)
+
+    data: list[list] = [HEADERS]
+    for r in rows:
+        cells = row_cells(r)
+        data.append([
+            P(cells[0]), P(cells[1]), P(cells[2]),
+            cells[3], cells[4], cells[5], cells[6], P(cells[7]),
+        ])
+
+    # Column widths (mm) — sum ~= 277mm (A4 landscape minus margins).
+    col_widths = [48, 40, 62, 20, 14, 22, 16, 55]
+    col_widths = [w * mm for w in col_widths]
+
+    table = Table(data, colWidths=col_widths, repeatRows=1)
+
+    style = TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), hex_to_color("1E3A8A")),
+        ("TEXTCOLOR",  (0, 0), (-1, 0), colors.white),
+        ("FONTNAME",   (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE",   (0, 0), (-1, 0), 9),
+        ("ALIGN",      (0, 0), (-1, 0), "CENTER"),
+        ("VALIGN",     (0, 0), (-1, -1), "MIDDLE"),
+        ("GRID",       (0, 0), (-1, -1), 0.25, colors.grey),
+        ("FONTSIZE",   (0, 1), (-1, -1), 8),
+        ("ALIGN",      (3, 1), (6, -1), "CENTER"),
+    ])
+
+    for i, r in enumerate(rows, start=1):
+        belt = norm(r.get("belt"))
+        fill_hex = BELT_FILLS.get(belt)
+        if not fill_hex:
+            continue
+        fill = hex_to_color(fill_hex)
+        font_color = colors.white if belt == "noire" else colors.black
+        style.add("BACKGROUND", (0, i), (2, i), fill)
+        style.add("TEXTCOLOR",  (0, i), (2, i), font_color)
+
+    table.setStyle(style)
+
+    doc.build([
+        Paragraph(f"Planning — {academy}", title_style),
+        Spacer(1, 4 * mm),
+        table,
+    ])
+
+
 # ---------- main ----------
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--academy", required=True, help="Academy to build the planning for (e.g. 'Example Academy').")
     ap.add_argument("--input-dir", default="output", help="Folder with the three JSON files.")
-    ap.add_argument("--out", default=None, help="Output .xlsx path (default: <input-dir>/planning_<academy>.xlsx).")
+    ap.add_argument("--format", choices=("xlsx", "pdf"), default="xlsx",
+                    help="Output format (default: xlsx).")
+    ap.add_argument("--out", default=None,
+                    help="Output path (default: <input-dir>/planning_<academy>.<format>).")
     ap.add_argument("--debug", action="store_true",
                     help="Print per-athlete lookup trace (bracket found, page/mat, which priority matched).")
     ap.add_argument("--only", default=None,
@@ -311,9 +399,12 @@ def main() -> int:
     rows.sort(key=lambda r: (str(r["date"]), str(r["time"]), str(r["mat"]), str(r["name"])))
 
     slug = "".join(c if c.isalnum() else "_" for c in args.academy).strip("_")
-    out_path = Path(args.out) if args.out else (in_dir / f"planning_{slug}.xlsx")
+    out_path = Path(args.out) if args.out else (in_dir / f"planning_{slug}.{args.format}")
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    write_xlsx(rows, out_path, args.academy)
+    if args.format == "pdf":
+        write_pdf(rows, out_path, args.academy)
+    else:
+        write_xlsx(rows, out_path, args.academy)
     print(f"[+] wrote {len(rows)} row(s) ({unresolved} unresolved) -> {out_path}", file=sys.stderr)
     return 0
 
