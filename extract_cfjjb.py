@@ -125,6 +125,34 @@ def discover_tab_links(page: Page, competition_id: int) -> dict[str, str]:
 
 # ---------- core ----------
 
+def derive_short_label(name: str) -> str:
+    """Map the page-visible competition name to the short Gi/No-Gi label.
+
+    CFJJB titles look like "Open de France", "Open de France No Gi",
+    "Open de France Kids", "Open de France Kids No Gi". "KIDS" in the
+    upper-cased name => Kids prefix; "NO GI" / "NOGI" => NO GI, else GI.
+    Adults have no prefix (so the final column stays short).
+    """
+    up = (name or "").upper()
+    kids = "KIDS" in up or "ENFANT" in up
+    nogi = "NO GI" in up or "NOGI" in up or "NO-GI" in up
+    short = "NO GI" if nogi else "GI"
+    return f"Kids {short}" if kids else short
+
+
+def harvest_competition_meta(page: Page) -> dict:
+    """Scrape the competition header (`<h2> > <span>`) from the rendered
+    page. Used to tag each per-competition output directory with a human
+    label, so the merged planning can show a meaningful Compétition
+    column instead of a raw numeric id.
+    """
+    name = page.evaluate(
+        "() => { const s = document.querySelector('h2 > span'); "
+        "return s ? (s.innerText || s.textContent || '').trim() : ''; }"
+    ) or ""
+    return {"name": name, "short_label": derive_short_label(name)}
+
+
 def capture_tab(page: Page, tab: str, url: str, out_dir: Path) -> dict:
     """Load a tab, wait for it to settle, save rendered HTML + screenshot.
 
@@ -1006,11 +1034,28 @@ def main() -> int:
         tab_urls = discover_tab_links(page, args.competition)
 
         results: dict[str, dict] = {}
+        meta_written = False
         for tab in tabs:
             if tab not in tab_urls:
                 print(f"[!] unknown tab: {tab}", file=sys.stderr)
                 continue
             results[tab] = capture_tab(page, tab, tab_urls[tab], out_dir)
+            if not meta_written:
+                # The H2 header appears on all three tabs — grab it from
+                # whichever one loads first.
+                meta = harvest_competition_meta(page)
+                meta["competition_id"] = args.competition
+                (out_dir / "meta.json").write_text(
+                    json.dumps(meta, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                print(
+                    f"    competition: {meta.get('name') or '(?)'} "
+                    f"-> label {meta.get('short_label')!r} "
+                    f"-> {out_dir}/meta.json",
+                    file=sys.stderr,
+                )
+                meta_written = True
             if tab == "participants":
                 # After the page has rendered, harvest the structured list
                 # straight from the DOM — works even if the data never came

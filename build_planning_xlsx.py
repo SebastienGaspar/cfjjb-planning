@@ -436,7 +436,12 @@ def main() -> int:
     ap.add_argument("--input-dir", nargs="+", default=["output"],
                     help="One or more folders with the three JSON files. "
                          "Pass multiple to merge several competitions of the "
-                         "same event (e.g. --input-dir output/941 output/942).")
+                         "same event (e.g. --input-dir output/941 output/942). "
+                         "Append '=LABEL' to force the Compétition column "
+                         "value for that directory, e.g. 'output/941=GI'. "
+                         "Without an override, the label comes from the "
+                         "directory's meta.json (written by extract_cfjjb.py), "
+                         "falling back to the directory basename.")
     ap.add_argument("--format", choices=("xlsx", "pdf"), default="xlsx",
                     help="Output format (default: xlsx).")
     ap.add_argument("--name", default=None,
@@ -452,13 +457,25 @@ def main() -> int:
                     help="When used with --debug, restrict the trace to athletes whose name contains this substring.")
     args = ap.parse_args()
 
-    in_dirs = [Path(d) for d in args.input_dir]
+    # Parse --input-dir entries: each is either "path" or "path=LABEL".
+    in_dirs: list[tuple[Path, str | None]] = []
+    for entry in args.input_dir:
+        if "=" in entry:
+            raw, forced = entry.split("=", 1)
+            in_dirs.append((Path(raw), forced.strip() or None))
+        else:
+            in_dirs.append((Path(entry), None))
     debug_target = norm(args.only) if args.only else ""
 
     all_rows: list[dict] = []
     total_unresolved = 0
-    for d in in_dirs:
-        label = d.name or str(d)
+    for d, forced in in_dirs:
+        if forced:
+            label = forced
+        else:
+            meta_path = d / "meta.json"
+            meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+            label = meta.get("short_label") or meta.get("name") or d.name or str(d)
         rows, unresolved = build_rows_for_dir(
             d, args.academy, label,
             debug=args.debug, debug_target=debug_target,
@@ -475,7 +492,7 @@ def main() -> int:
 
     include_competition = len(in_dirs) > 1
 
-    first_dir = in_dirs[0]
+    first_dir = in_dirs[0][0]
     if args.out:
         out_path = Path(args.out)
     elif args.name:

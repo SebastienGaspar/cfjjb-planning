@@ -75,6 +75,7 @@ After this step, `output/<competition-id>/` contains:
 | `planning.json` | the "Le Planning" tab |
 | `brackets_by_category.json` | the "Tableaux de Combats" tab (aggregated per category) |
 | `brackets_sections_raw.json` | one record per bracket section, with `outer_html` for debugging |
+| `meta.json` | the competition id, its page-visible name, and a derived `short_label` (`GI`, `NO GI`, `Kids GI`, `Kids NO GI`) |
 | `<tab>.html` and `<tab>.png` | rendered snapshot of each tab for debugging |
 
 ### 2. Build the planning for your academy
@@ -124,8 +125,17 @@ python3 build_planning_xlsx.py \
 The join runs independently per directory (category/page/mat keys only
 make sense within one competition), then every row is merged and
 re-sorted by date → time → mat. A `Compétition` column is added to the
-output whenever more than one `--input-dir` is given, so you can tell
-which id each row came from.
+output whenever more than one `--input-dir` is given.
+
+The label shown in that column is derived, in order of precedence:
+
+1. An explicit override via `--input-dir path=LABEL`, e.g.
+   `--input-dir output/941=GI output/942="NO GI"`.
+2. The `short_label` written into `meta.json` by the extractor (derived
+   from the page-visible competition name: `Kids` prefix if "KIDS"
+   appears, suffix `NO GI` if "NO GI" / "NOGI" appears, else `GI`).
+3. The directory basename (fallback for legacy extractions without
+   `meta.json`).
 
 ## Helpers
 
