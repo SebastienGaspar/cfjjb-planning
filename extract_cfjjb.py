@@ -632,7 +632,7 @@ _BRACKET_OBSERVER_JS = r"""
 """
 
 
-def harvest_brackets(page: Page) -> list[dict]:
+def harvest_brackets(page: Page, out_dir: Path) -> list[dict]:
     """Install an in-page MutationObserver that captures every <section
     class="wpage"> the moment it mounts — we then scroll top-to-bottom
     once so every lazy-mounted section briefly exists, and read the
@@ -689,13 +689,12 @@ def harvest_brackets(page: Page) -> list[dict]:
     # Persist the raw per-section capture (with HTML) for debugging. If
     # anything ever looks wrong again, open this file and grep for the
     # fighter / category in question.
-    out_dir = Path(__file__).parent / "output"
     (out_dir / "brackets_sections_raw.json").write_text(
         json.dumps(raw_entries, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     print(
         f"    captured {len(raw_entries)} section HTML snapshot(s) "
-        f"-> output/brackets_sections_raw.json",
+        f"-> {out_dir}/brackets_sections_raw.json",
         file=sys.stderr,
     )
 
@@ -979,10 +978,17 @@ def main() -> int:
     ap.add_argument("--tabs", default="participants,plannings,brackets",
                     help="Comma-separated tabs (default: all three).")
     ap.add_argument("--headed", action="store_true", help="Run browser in headed mode.")
+    ap.add_argument("--out-dir", default=None,
+                    help="Directory for the JSON + HTML/PNG dumps "
+                         "(default: output/<competition-id>/). Useful when "
+                         "extracting multiple competitions of the same event.")
     args = ap.parse_args()
 
-    out_dir = Path(__file__).parent / "output"
-    out_dir.mkdir(exist_ok=True)
+    if args.out_dir:
+        out_dir = Path(args.out_dir)
+    else:
+        out_dir = Path(__file__).parent / "output" / str(args.competition)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     tabs = [t.strip() for t in args.tabs.split(",") if t.strip()]
 
@@ -1016,7 +1022,7 @@ def main() -> int:
                 total = sum(len(t["athletes"]) for t in teams)
                 print(
                     f"    scraped {len(teams)} team(s) / {total} athlete(s) "
-                    f"from DOM -> output/participants_by_team.json",
+                    f"from DOM -> {out_dir}/participants_by_team.json",
                     file=sys.stderr,
                 )
 
@@ -1027,7 +1033,7 @@ def main() -> int:
                 )
                 print(
                     f"    scraped {len(fights)} fight slot(s) "
-                    f"from DOM -> output/planning.json",
+                    f"from DOM -> {out_dir}/planning.json",
                     file=sys.stderr,
                 )
 
@@ -1035,7 +1041,7 @@ def main() -> int:
                 # Bracket categories are lazy-mounted *and* unmounted by
                 # IntersectionObserver. Scroll + scrape in the same loop,
                 # accumulating so nothing is lost when Vue later unmounts.
-                cats = harvest_brackets(page)
+                cats = harvest_brackets(page, out_dir)
                 (out_dir / "brackets_by_category.json").write_text(
                     json.dumps(cats, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
@@ -1044,7 +1050,7 @@ def main() -> int:
                 print(
                     f"    scraped {len(cats)} categor(ies), "
                     f"{populated} populated, {fighters} fighter slot(s) "
-                    f"-> output/brackets_by_category.json",
+                    f"-> {out_dir}/brackets_by_category.json",
                     file=sys.stderr,
                 )
 

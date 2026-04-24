@@ -21,10 +21,19 @@ Output columns:
 One row per athlete (no more "same category × N slots" blow-up).
 Output lands in output/planning_<academy>.<xlsx|pdf>.
 
+Multiple --input-dir values are allowed: the join runs independently per
+directory (each one is a separate CFJJB competition, with its own
+categories / pages / mats), then the resulting rows are concatenated and
+sorted chronologically. Useful for events split across several
+competitions (Gi / No-Gi / Kids Gi / Kids No-Gi).
+
 Usage:
     pip install openpyxl reportlab
     python3 build_planning_xlsx.py --academy "Example Academy"
     python3 build_planning_xlsx.py --academy "Example Academy" --format pdf
+    python3 build_planning_xlsx.py --academy "Example Academy" \
+        --input-dir output/941 output/942 output/943 output/944 \
+        --format pdf --name orleans_2026
 """
 
 from __future__ import annotations
@@ -107,10 +116,16 @@ def locate_athlete_in_bracket(name: str, bracket: dict | None) -> tuple[int | No
 
 # ---------- writer ----------
 
-HEADERS = [
+HEADERS_BASE = [
     "Participant", "Équipe", "Catégorie",
     "Date", "Heure", "Tapis", "Tableaux", "Note",
 ]
+
+
+def make_headers(include_competition: bool) -> list[str]:
+    if include_competition:
+        return HEADERS_BASE[:-1] + ["Compétition", HEADERS_BASE[-1]]
+    return list(HEADERS_BASE)
 
 BELT_FILLS = {
     "blanche":  "FFFFFF",
@@ -135,36 +150,41 @@ def format_tableaux(r: dict) -> str:
     return ""
 
 
-def row_cells(r: dict) -> list[str]:
-    return [
+def row_cells(r: dict, include_competition: bool = False) -> list[str]:
+    base = [
         r["name"], r["team"], r["category"],
         r["date"], r["time"], r["mat"],
         format_tableaux(r),
-        r["note"] or "",
     ]
+    if include_competition:
+        base.append(r.get("competition") or "")
+    base.append(r["note"] or "")
+    return base
 
 
-def write_xlsx(rows: list[dict], out_path: Path, academy: str) -> None:
+def write_xlsx(rows: list[dict], out_path: Path, academy: str,
+               include_competition: bool = False) -> None:
+    headers = make_headers(include_competition)
     wb = Workbook()
     ws = wb.active
     ws.title = "Planning"
 
-    ws.append([f"Planning — {academy}"] + [""] * (len(HEADERS) - 1))
-    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(HEADERS))
+    ws.append([f"Planning — {academy}"] + [""] * (len(headers) - 1))
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(headers))
     ws["A1"].font = Font(bold=True, size=14)
     ws["A1"].alignment = Alignment(horizontal="center")
 
-    ws.append(HEADERS)
+    ws.append(headers)
     header_fill = PatternFill("solid", fgColor="1E3A8A")
     header_font = Font(bold=True, color="FFFFFF")
-    for col in range(1, len(HEADERS) + 1):
+    for col in range(1, len(headers) + 1):
         c = ws.cell(row=2, column=col)
         c.fill = header_fill
         c.font = header_font
         c.alignment = Alignment(horizontal="center", vertical="center")
 
     for r in rows:
-        ws.append(row_cells(r))
+        ws.append(row_cells(r, include_competition))
         belt = norm(r.get("belt"))
         fill_hex = BELT_FILLS.get(belt)
         if fill_hex:
@@ -175,16 +195,21 @@ def write_xlsx(rows: list[dict], out_path: Path, academy: str) -> None:
                 cell.fill = fill
                 cell.font = Font(color=font_color)
 
-    widths = [28, 24, 38, 12, 8, 12, 10, 28]
+    widths_base = [28, 24, 38, 12, 8, 12, 10, 28]
+    if include_competition:
+        widths = widths_base[:-1] + [18, widths_base[-1]]
+    else:
+        widths = widths_base
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
     ws.freeze_panes = "A3"
-    ws.auto_filter.ref = f"A2:{get_column_letter(len(HEADERS))}{ws.max_row}"
+    ws.auto_filter.ref = f"A2:{get_column_letter(len(headers))}{ws.max_row}"
     wb.save(out_path)
 
 
-def write_pdf(rows: list[dict], out_path: Path, academy: str) -> None:
+def write_pdf(rows: list[dict], out_path: Path, academy: str,
+              include_competition: bool = False) -> None:
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4, landscape
     from reportlab.lib.styles import getSampleStyleSheet
@@ -195,6 +220,8 @@ def write_pdf(rows: list[dict], out_path: Path, academy: str) -> None:
 
     def hex_to_color(hex_str: str) -> colors.Color:
         return colors.HexColor("#" + hex_str)
+
+    headers = make_headers(include_competition)
 
     page_size = landscape(A4)
     doc = SimpleDocTemplate(
@@ -217,20 +244,32 @@ def write_pdf(rows: list[dict], out_path: Path, academy: str) -> None:
         safe = (text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         return Paragraph(safe, cell_style)
 
-    data: list[list] = [HEADERS]
+    note_col = len(headers) - 1  # last column is always "Note"
+    data: list[list] = [headers]
     for r in rows:
-        cells = row_cells(r)
-        data.append([
-            P(cells[0]), P(cells[1]), P(cells[2]),
-            cells[3], cells[4], cells[5], cells[6], P(cells[7]),
-        ])
+        cells = row_cells(r, include_competition)
+        row = []
+        for i, val in enumerate(cells):
+            # Wrap text in the first three columns and the last (Note)
+            # + the competition column if present — these can be long.
+            if i in (0, 1, 2) or i == note_col or (include_competition and i == note_col - 1):
+                row.append(P(val))
+            else:
+                row.append(val)
+        data.append(row)
 
     # Column widths (mm) — sum ~= 277mm (A4 landscape minus margins).
-    col_widths = [48, 40, 62, 20, 14, 22, 16, 55]
+    if include_competition:
+        # Squeeze the note column to fit Compétition in.
+        col_widths = [46, 36, 58, 20, 14, 22, 16, 22, 43]
+    else:
+        col_widths = [48, 40, 62, 20, 14, 22, 16, 55]
     col_widths = [w * mm for w in col_widths]
 
     table = Table(data, colWidths=col_widths, repeatRows=1)
 
+    # Centered columns: Date/Heure/Tapis/Tableaux are fixed-width fields.
+    # Their column indices are 3..6 in both layouts.
     style = TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), hex_to_color("1E3A8A")),
         ("TEXTCOLOR",  (0, 0), (-1, 0), colors.white),
@@ -264,50 +303,34 @@ def write_pdf(rows: list[dict], out_path: Path, academy: str) -> None:
 
 # ---------- main ----------
 
-def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--academy", required=True, help="Academy to build the planning for (e.g. 'Example Academy').")
-    ap.add_argument("--input-dir", default="output", help="Folder with the three JSON files.")
-    ap.add_argument("--format", choices=("xlsx", "pdf"), default="xlsx",
-                    help="Output format (default: xlsx).")
-    ap.add_argument("--name", default=None,
-                    help="Output filename stem placed under --input-dir "
-                         "(e.g. --name mon_planning -> <input-dir>/mon_planning.<format>). "
-                         "Any extension you include is stripped.")
-    ap.add_argument("--out", default=None,
-                    help="Full output path, overrides --name and --input-dir "
-                         "(default: <input-dir>/planning_<academy>.<format>).")
-    ap.add_argument("--debug", action="store_true",
-                    help="Print per-athlete lookup trace (bracket found, page/mat, which priority matched).")
-    ap.add_argument("--only", default=None,
-                    help="When used with --debug, restrict the trace to athletes whose name contains this substring.")
-    args = ap.parse_args()
-
-    in_dir = Path(args.input_dir)
+def build_rows_for_dir(
+    in_dir: Path,
+    academy: str,
+    competition_label: str,
+    debug: bool = False,
+    debug_target: str = "",
+) -> tuple[list[dict], int]:
+    """Run the full join (participants × brackets × planning) inside one
+    competition directory. Returns (rows, unresolved_count). Each row gets
+    the competition_label stamped on it so merged outputs stay traceable."""
     participants = load_json(in_dir / "participants_by_team.json") or []
     planning     = load_json(in_dir / "planning.json") or []
     brackets     = load_json(in_dir / "brackets_by_category.json") or []
 
-    athletes = collect_academy_athletes(participants, args.academy)
-    if not athletes:
-        print(f"[!] no athletes matched academy ~ '{args.academy}' in "
-              "participants_by_team.json.", file=sys.stderr)
-        return 1
+    athletes = collect_academy_athletes(participants, academy)
 
     bracket_idx  = index_brackets(brackets)
     planning_idx = index_planning(planning)
 
     print(
-        f"[+] {len(athletes)} athlete(s) for '{args.academy}' | "
+        f"[+] [{competition_label}] {len(athletes)} athlete(s) for '{academy}' | "
         f"{len(bracket_idx)} bracket category(ies) | "
         f"{sum(len(v) for k, v in planning_idx.items() if k[1] is not None)} located planning slot(s).",
         file=sys.stderr,
     )
 
-    debug_target = norm(args.only) if args.only else ""
-
     def trace(ath: dict, *parts: str) -> None:
-        if not args.debug:
+        if not debug:
             return
         if debug_target and debug_target not in norm(ath.get("name", "")):
             return
@@ -324,9 +347,10 @@ def main() -> int:
 
         seed, page, bracket_mat, _ = locate_athlete_in_bracket(ath["name"], bracket)
 
-        if args.debug and (not debug_target or debug_target in norm(ath.get("name", ""))):
-            print(f"[{ath['name']}] team={ath['team']!r} cat={ath['category']!r} "
-                  f"cat_key={cat_key!r} bracket_found={bracket is not None} "
+        if debug and (not debug_target or debug_target in norm(ath.get("name", ""))):
+            print(f"[{competition_label}] [{ath['name']}] team={ath['team']!r} "
+                  f"cat={ath['category']!r} cat_key={cat_key!r} "
+                  f"bracket_found={bracket is not None} "
                   f"page={page} mat={bracket_mat!r} seed={seed}",
                   file=sys.stderr)
 
@@ -385,6 +409,7 @@ def main() -> int:
                 "date": "", "time": "", "mat": bracket_mat,
                 "page": page, "page_total": page_total,
                 "note": "; ".join(hints) or "pas de créneau trouvé",
+                "competition": competition_label,
             })
             continue
 
@@ -399,24 +424,72 @@ def main() -> int:
             "page_total": slot.get("fight_total") if slot.get("fight_total") is not None else page_total,
             "note": slot.get("note") or "",
             "has_slot": True,
+            "competition": competition_label,
         })
 
-    rows.sort(key=lambda r: (str(r["date"]), str(r["time"]), str(r["mat"]), str(r["name"])))
+    return rows, unresolved
 
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--academy", required=True, help="Academy to build the planning for (e.g. 'Example Academy').")
+    ap.add_argument("--input-dir", nargs="+", default=["output"],
+                    help="One or more folders with the three JSON files. "
+                         "Pass multiple to merge several competitions of the "
+                         "same event (e.g. --input-dir output/941 output/942).")
+    ap.add_argument("--format", choices=("xlsx", "pdf"), default="xlsx",
+                    help="Output format (default: xlsx).")
+    ap.add_argument("--name", default=None,
+                    help="Output filename stem placed under the first --input-dir "
+                         "(e.g. --name mon_planning -> <input-dir>/mon_planning.<format>). "
+                         "Any extension you include is stripped.")
+    ap.add_argument("--out", default=None,
+                    help="Full output path, overrides --name and --input-dir "
+                         "(default: <first-input-dir>/planning_<academy>.<format>).")
+    ap.add_argument("--debug", action="store_true",
+                    help="Print per-athlete lookup trace (bracket found, page/mat, which priority matched).")
+    ap.add_argument("--only", default=None,
+                    help="When used with --debug, restrict the trace to athletes whose name contains this substring.")
+    args = ap.parse_args()
+
+    in_dirs = [Path(d) for d in args.input_dir]
+    debug_target = norm(args.only) if args.only else ""
+
+    all_rows: list[dict] = []
+    total_unresolved = 0
+    for d in in_dirs:
+        label = d.name or str(d)
+        rows, unresolved = build_rows_for_dir(
+            d, args.academy, label,
+            debug=args.debug, debug_target=debug_target,
+        )
+        all_rows.extend(rows)
+        total_unresolved += unresolved
+
+    if not all_rows:
+        print(f"[!] no athletes matched academy ~ '{args.academy}' across "
+              f"{len(in_dirs)} input dir(s).", file=sys.stderr)
+        return 1
+
+    all_rows.sort(key=lambda r: (str(r["date"]), str(r["time"]), str(r["mat"]), str(r["name"])))
+
+    include_competition = len(in_dirs) > 1
+
+    first_dir = in_dirs[0]
     if args.out:
         out_path = Path(args.out)
     elif args.name:
         stem = Path(args.name).stem or args.name
-        out_path = in_dir / f"{stem}.{args.format}"
+        out_path = first_dir / f"{stem}.{args.format}"
     else:
         slug = "".join(c if c.isalnum() else "_" for c in args.academy).strip("_")
-        out_path = in_dir / f"planning_{slug}.{args.format}"
+        out_path = first_dir / f"planning_{slug}.{args.format}"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     if args.format == "pdf":
-        write_pdf(rows, out_path, args.academy)
+        write_pdf(all_rows, out_path, args.academy, include_competition=include_competition)
     else:
-        write_xlsx(rows, out_path, args.academy)
-    print(f"[+] wrote {len(rows)} row(s) ({unresolved} unresolved) -> {out_path}", file=sys.stderr)
+        write_xlsx(all_rows, out_path, args.academy, include_competition=include_competition)
+    print(f"[+] wrote {len(all_rows)} row(s) ({total_unresolved} unresolved) -> {out_path}", file=sys.stderr)
     return 0
 
 

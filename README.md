@@ -46,7 +46,7 @@ JSON into `output/`; the builder reads from there.
 `cfjjb.com` URL that carries it:
 
 ```bash
-# Bare id
+# Bare id — writes to output/941/
 python3 extract_cfjjb.py --competition 941
 
 # Or any of these URL forms
@@ -58,9 +58,16 @@ python3 extract_cfjjb.py --competition 941 --tabs brackets
 
 # Watch the browser work
 python3 extract_cfjjb.py --competition 941 --headed
+
+# Override the output location (default: output/<competition-id>/)
+python3 extract_cfjjb.py --competition 941 --out-dir output/orleans_gi
 ```
 
-After this step, `output/` contains:
+Each run writes into its own `output/<competition-id>/` folder so that
+multiple competitions of the same event (Gi, No-Gi, Kids Gi, Kids
+No-Gi) can be extracted without overwriting each other.
+
+After this step, `output/<competition-id>/` contains:
 
 | File | Source |
 | --- | --- |
@@ -70,22 +77,55 @@ After this step, `output/` contains:
 | `brackets_sections_raw.json` | one record per bracket section, with `outer_html` for debugging |
 | `<tab>.html` and `<tab>.png` | rendered snapshot of each tab for debugging |
 
-### 2. Build the Excel for your academy
+### 2. Build the planning for your academy
 
 ```bash
-python3 build_planning_xlsx.py --academy "Example Academy"
+# xlsx (default) — reads from output/941/
+python3 build_planning_xlsx.py --academy "Example Academy" --input-dir output/941
+
+# Same thing as a PDF
+python3 build_planning_xlsx.py --academy "Example Academy" --input-dir output/941 --format pdf
+
+# Pick the output basename (extension added automatically)
+python3 build_planning_xlsx.py --academy "Example Academy" --input-dir output/941 --name orleans_gi
 ```
 
 The academy match is a substring, accent- and case-insensitive, so
 `"example"` or `"EXAMPLE ACADEMY"` work equally well. Output lands in
-`output/planning_<academy>.xlsx`.
+`<first-input-dir>/planning_<academy>.<xlsx|pdf>` by default; override
+with `--name <stem>` (placed under the first input dir) or `--out
+<path>`.
 
 A `--debug` mode prints a one-line trace per athlete showing which
 priority matched and why, with `--only "name-substring"` to focus it:
 
 ```bash
-python3 build_planning_xlsx.py --academy "Example Academy" --debug --only "DOE"
+python3 build_planning_xlsx.py --academy "Example Academy" --input-dir output/941 --debug --only "DOE"
 ```
+
+### 2b. Merge several competitions of the same event
+
+Events on CFJJB are commonly split across four competition ids — Gi,
+No-Gi, Kids Gi, Kids No-Gi. After extracting each one into its own
+folder, pass them all to the builder in a single run:
+
+```bash
+python3 extract_cfjjb.py --competition 941      # Gi        -> output/941/
+python3 extract_cfjjb.py --competition 942      # No-Gi     -> output/942/
+python3 extract_cfjjb.py --competition 943      # Kids Gi   -> output/943/
+python3 extract_cfjjb.py --competition 944      # Kids No-Gi -> output/944/
+
+python3 build_planning_xlsx.py \
+    --academy "Example Academy" \
+    --input-dir output/941 output/942 output/943 output/944 \
+    --format pdf --name orleans_2026
+```
+
+The join runs independently per directory (category/page/mat keys only
+make sense within one competition), then every row is merged and
+re-sorted by date → time → mat. A `Compétition` column is added to the
+output whenever more than one `--input-dir` is given, so you can tell
+which id each row came from.
 
 ## Helpers
 
